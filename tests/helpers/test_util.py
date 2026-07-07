@@ -1,6 +1,7 @@
 """Tests for music_assistant.helpers.util helpers."""
 
 import asyncio
+import socket
 import time
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ import pytest
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     get_source_ip_for_target,
+    is_port_in_use,
     load_provider_module,
     sanitize_http_header_value,
     select_free_port,
@@ -59,6 +61,38 @@ class TestGetSourceIpForTarget:
         assert result == "0.0.0.0"
 
 
+class TestIsPortInUse:
+    """is_port_in_use detects occupied ports, optionally probing a specific address."""
+
+    @pytest.mark.asyncio
+    async def test_bound_port_detected_on_specific_host(self) -> None:
+        """A port with an active listener on the probed address is reported in use."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("0.0.0.0", 0))
+            sock.listen(1)
+            port = sock.getsockname()[1]
+            assert await is_port_in_use(port, host="0.0.0.0") is True
+
+    @pytest.mark.asyncio
+    async def test_free_port_reported_free_on_specific_host(self) -> None:
+        """A port without a listener on the probed address is reported free."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("0.0.0.0", 0))
+            port = sock.getsockname()[1]
+        assert await is_port_in_use(port, host="0.0.0.0") is False
+
+    @pytest.mark.asyncio
+    async def test_host_probe_only_checks_matching_family(self) -> None:
+        """With a host given, only that address (and its family) is probed."""
+        for host, family in (("0.0.0.0", socket.AF_INET), ("::", socket.AF_INET6)):
+            with patch("music_assistant.helpers.util.socket.socket") as mock_socket:
+                await is_port_in_use(38800, host=host)
+            mock_socket.assert_called_once_with(family, socket.SOCK_STREAM)
+            mock_socket.return_value.__enter__.return_value.bind.assert_called_once_with(
+                (host, 38800)
+            )
+
+
 class TestSelectFreePort:
     """select_free_port hands out distinct ports even under concurrent calls."""
 
@@ -86,6 +120,22 @@ class TestSelectFreePort:
             util._reserved_ports[first] = 0.0
             second = await select_free_port(38800, 38900)
         assert first == second
+
+    @pytest.mark.asyncio
+    async def test_host_is_passed_to_port_probe(self) -> None:
+        """A given host is forwarded to the availability probe."""
+        with patch("music_assistant.helpers.util.is_port_in_use", return_value=False) as probe:
+            port = await select_free_port(38800, 38900, host="0.0.0.0")
+        probe.assert_awaited_once_with(port, "0.0.0.0")
+
+    @pytest.mark.asyncio
+    async def test_exhausted_range_error_mentions_inclusive_range(self) -> None:
+        """The exhausted-range error names the searched range with an inclusive end."""
+        with (
+            patch("music_assistant.helpers.util.is_port_in_use", return_value=True),
+            pytest.raises(OSError, match=r"38800-38809$"),
+        ):
+            await select_free_port(38800, 38810)
 
 
 class TestLoadProviderModule:
