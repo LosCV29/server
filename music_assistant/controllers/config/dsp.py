@@ -259,7 +259,7 @@ class DSPConfigMixin:
                 raise
         else:
             await self._remove_file(ir_path)
-        self._clear_dsp_ir_assignments(ir_id)
+        await self._clear_dsp_ir_assignments(ir_id)
 
         self.mass.signal_event(
             EventType.DSP_IRS_UPDATED,
@@ -309,7 +309,7 @@ class DSPConfigMixin:
                 data=config,
             )
 
-    def _clear_dsp_ir_assignments(self, ir_id: str) -> None:
+    async def _clear_dsp_ir_assignments(self, ir_id: str) -> None:
         """Blank a removed impulse response from any player config or preset using it."""
         raw_configs: dict[str, dict[str, Any]] = self.get(CONF_PLAYER_DSP, {})
         for player_id, raw_config in tuple(raw_configs.items()):
@@ -323,11 +323,19 @@ class DSPConfigMixin:
                 data=config,
             )
         raw_presets: dict[str, dict[str, Any]] = self.get(CONF_PLAYER_DSP_PRESETS, {})
+        presets_changed = False
         for preset_key, raw_preset in tuple(raw_presets.items()):
             preset = DSPConfigPreset.from_dict(raw_preset)
             if not _blank_convolution_ir(preset.config, ir_id):
                 continue
             self.set(f"{CONF_PLAYER_DSP_PRESETS}/{preset_key}", preset.to_dict())
+            presets_changed = True
+
+        if presets_changed:
+            self.mass.signal_event(
+                EventType.DSP_PRESETS_UPDATED,
+                data=await self.get_dsp_presets(),
+            )
 
     def _dsp_irs_dir(self) -> str:
         """Return the directory holding convolution impulse response files."""
